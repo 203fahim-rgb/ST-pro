@@ -6804,6 +6804,7 @@ async function gFetchProfile() {
     gUser.name  = p.name;
     gUser.picture = p.picture;
     localStorage.setItem('g-user-cache', JSON.stringify({ email: gUser.email, name: gUser.name, picture: gUser.picture }));
+    localStorage.setItem('g-last-active', Date.now().toString());
     await gCheckAccessAndContinue();
   } catch(e) { gLoginError('Profile fetch failed'); }
 }
@@ -7344,10 +7345,15 @@ function gBootCheck() {
     try {
       const u = JSON.parse(cached);
       // Check inactivity
-      const last = parseInt(localStorage.getItem('g-last-active') || '0');
+      let last = parseInt(localStorage.getItem('g-last-active') || '0');
+      // Migration: if no timestamp saved yet, set it now (don't punish first-time users)
+      if (last === 0) {
+        last = Date.now();
+        localStorage.setItem('g-last-active', last.toString());
+      }
       const elapsed = Date.now() - last;
       const limitMs = INACTIVITY_DAYS * 24 * 60 * 60 * 1000;
-      if (last > 0 && elapsed > limitMs) {
+      if (elapsed > limitMs) {
         // Inactivity expired — show lock screen
         document.getElementById('glogin-screen').style.display = 'none';
         document.getElementById('main-nav').style.display = 'none';
