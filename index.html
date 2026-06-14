@@ -1577,11 +1577,22 @@ body::before {
       </button>
       <div style="font-size:1.1rem;font-weight:800;color:var(--text);">👑 Admin Panel</div>
     </div>
+    <!-- Manage Allowed Users -->
+    <div style="background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:16px;margin-bottom:16px;">
+      <div style="font-size:0.78rem;font-weight:800;color:var(--text3);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;">🔑 Allowed Users</div>
+      <div style="font-size:0.73rem;color:var(--text2);margin-bottom:10px;line-height:1.5;">Only these emails can log in. Users not listed will see "Access Denied".</div>
+      <div id="allowed-users-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;"></div>
+      <div style="display:flex;gap:8px;">
+        <input id="admin-add-email" class="field-input" type="email" placeholder="user@gmail.com" style="flex:1;padding:9px 12px;font-size:0.83rem;" onkeydown="if(event.key==='Enter')adminAddAllowedUser()">
+        <button onclick="adminAddAllowedUser()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);padding:9px 16px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap;">+ Add</button>
+      </div>
+    </div>
+
     <div id="admin-friends-section" style="
       background:var(--surface);border:1px solid var(--border2);
       border-radius:var(--radius);padding:16px;">
       <div style="font-size:0.78rem;font-weight:800;color:var(--text3);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:4px;">👥 Friends' Data</div>
-      <div style="font-size:0.75rem;color:var(--text3);margin-bottom:12px;">Anyone who signs in via the link appears here automatically.</div>
+      <div style="font-size:0.75rem;color:var(--text3);margin-bottom:12px;">Allowed users who have synced their data to Drive appear here.</div>
       <div id="admin-friends-list" style="display:flex;flex-direction:column;gap:12px;">
         <div style="font-size:0.82rem;color:var(--text3);text-align:center;padding:20px 0;">
           Loading friends' data...
@@ -6809,12 +6820,32 @@ async function gFetchProfile() {
   } catch(e) { gLoginError('Profile fetch failed'); }
 }
 
+// ── Allowed users list (non-admin emails that can access the app) ──
+// Admin can manage this list via localStorage key 'g-allowed-users' (JSON array of email strings)
+function getAllowedEmails() {
+  try {
+    const saved = localStorage.getItem(ALLOWED_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch(e) { return []; }
+}
+
 // ── Check access list ──
 async function gCheckAccessAndContinue() {
-  document.getElementById('glogin-status').textContent = 'Signing in…';
+  document.getElementById('glogin-status').textContent = 'Checking access…';
   gIsAdmin = (gUser.email === ADMIN_EMAIL);
-  // Anyone with the link can use the app — no approval needed
-  gUnlockApp();
+
+  // Admin always gets in
+  if (gIsAdmin) { gUnlockApp(); return; }
+
+  // Check if this email is in the allowed list
+  const allowed = getAllowedEmails();
+  if (allowed.map(e => e.toLowerCase().trim()).includes(gUser.email.toLowerCase().trim())) {
+    gUnlockApp();
+    return;
+  }
+
+  // Not allowed — show access denied
+  gShowAccessDenied();
 }
 
 // ── Unlock app after auth success ──
@@ -6897,8 +6928,43 @@ document.addEventListener('click', gUpdateLastActive, { passive: true });
 
 // ── Drive Backup — saves to user's own Drive AND shares directly with admin ──
 async function gDriveBackup(silent) {
-  if (!gUser || !gUser.accessToken) { if (!silent) toast('⚠ Sign in with Google first'); return; }
-  if (!_gapiReady) { if (!silent) toast('⚠ Google API loading, try again'); return; }
+  if (!gUser) { if (!silent) toast('⚠ Sign in with Google first'); return; }
+
+  // If no access token yet, request one first
+  if (!gUser.accessToken) {
+    if (!silent) toast('⏳ Getting Drive access…');
+    // Wait for token client to be ready (up to 5 seconds)
+    let waited = 0;
+    while (!_tokenClient && waited < 50) { await new Promise(r => setTimeout(r, 100)); waited++; }
+    if (!_tokenClient) { if (!silent) toast('❌ Google API not ready. Please try again.'); return; }
+
+    await new Promise((resolve) => {
+      const origCallback = _tokenClient.callback;
+      _tokenClient.callback = (tokenResponse) => {
+        if (tokenResponse.error) {
+          if (!silent) toast('❌ Could not get Drive access: ' + tokenResponse.error);
+          _tokenClient.callback = origCallback;
+          resolve(false);
+          return;
+        }
+        gUser.accessToken = tokenResponse.access_token;
+        _tokenClient.callback = origCallback;
+        resolve(true);
+      };
+      _tokenClient.requestAccessToken({ prompt: '' });
+    });
+    if (!gUser.accessToken) return;
+  }
+
+  if (!_gapiReady) {
+    // Wait up to 5 seconds for GAPI to be ready
+    let waited = 0;
+    while (!_gapiReady && waited < 50) {
+      await new Promise(r => setTimeout(r, 100));
+      waited++;
+    }
+    if (!_gapiReady) { if (!silent) toast('⚠ Google API loading, please try again in a moment'); return; }
+  }
 
   if (!silent) toast('☁ Saving to Drive…');
 
@@ -6979,8 +7045,30 @@ async function gDriveBackup(silent) {
 
 // ── Drive Restore ──
 async function gDriveRestore() {
-  if (!gUser || !gUser.accessToken) { toast('⚠ Sign in with Google first'); return; }
-  if (!_gapiReady) { toast('⚠ Google API loading, try again'); return; }
+  if (!gUser) { toast('⚠ Sign in with Google first'); return; }
+
+  if (!gUser.accessToken) {
+    toast('⏳ Getting Drive access…');
+    let waited = 0;
+    while (!_tokenClient && waited < 50) { await new Promise(r => setTimeout(r, 100)); waited++; }
+    if (!_tokenClient) { toast('❌ Google API not ready. Please try again.'); return; }
+    await new Promise((resolve) => {
+      const origCallback = _tokenClient.callback;
+      _tokenClient.callback = (tokenResponse) => {
+        _tokenClient.callback = origCallback;
+        if (!tokenResponse.error) gUser.accessToken = tokenResponse.access_token;
+        resolve();
+      };
+      _tokenClient.requestAccessToken({ prompt: '' });
+    });
+    if (!gUser.accessToken) { toast('❌ Could not get Drive access'); return; }
+  }
+
+  if (!_gapiReady) {
+    let waited = 0;
+    while (!_gapiReady && waited < 50) { await new Promise(r => setTimeout(r, 100)); waited++; }
+    if (!_gapiReady) { toast('⚠ Google API loading, please try again'); return; }
+  }
 
   toast('☁ Fetching from Drive…');
   try {
@@ -7041,7 +7129,45 @@ function _patchHomeMenu() {
 async function openAdminPanel() {
   if (!gIsAdmin) { toast('Admin only'); return; }
   document.getElementById('admin-overlay').style.display = 'block';
+  renderAllowedUsersList();
   await adminLoadFriendsData();
+}
+
+function renderAllowedUsersList() {
+  const el = document.getElementById('allowed-users-list');
+  if (!el) return;
+  const allowed = getAllowedEmails();
+  if (!allowed.length) {
+    el.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:6px 0;">No allowed users yet.</div>';
+    return;
+  }
+  el.innerHTML = allowed.map((email, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border-radius:var(--radius-xs);padding:8px 12px;">
+      <span style="font-size:0.82rem;color:var(--text);">${email}</span>
+      <button onclick="adminRemoveAllowedUser(${i})" style="background:var(--red-soft);color:var(--red);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;cursor:pointer;">Remove</button>
+    </div>`).join('');
+}
+
+function adminAddAllowedUser() {
+  const inp = document.getElementById('admin-add-email');
+  const email = (inp.value || '').trim().toLowerCase();
+  if (!email || !email.includes('@')) { toast('Enter a valid email'); return; }
+  if (email === ADMIN_EMAIL) { toast('Admin is always allowed'); inp.value = ''; return; }
+  const allowed = getAllowedEmails();
+  if (allowed.map(e => e.toLowerCase()).includes(email)) { toast('Already in the list'); return; }
+  allowed.push(email);
+  localStorage.setItem(ALLOWED_KEY, JSON.stringify(allowed));
+  inp.value = '';
+  renderAllowedUsersList();
+  toast('✓ Added: ' + email);
+}
+
+function adminRemoveAllowedUser(idx) {
+  const allowed = getAllowedEmails();
+  const removed = allowed.splice(idx, 1)[0];
+  localStorage.setItem(ALLOWED_KEY, JSON.stringify(allowed));
+  renderAllowedUsersList();
+  toast('Removed: ' + removed);
 }
 
 function closeAdminPanel() {
@@ -7361,9 +7487,24 @@ function gBootCheck() {
         document.getElementById('lock-screen').style.display = 'flex';
         return;
       }
-      // Restore session from cache — skip login screen
+      // Restore session from cache — verify access first
       gUser = { email: u.email, name: u.name, picture: u.picture, accessToken: null };
       gIsAdmin = (gUser.email === ADMIN_EMAIL);
+
+      // Re-check access for non-admin users
+      if (!gIsAdmin) {
+        const allowed = getAllowedEmails();
+        if (!allowed.map(e => e.toLowerCase().trim()).includes(gUser.email.toLowerCase().trim())) {
+          // Was previously allowed but now removed, or never allowed
+          localStorage.removeItem('g-user-cache');
+          document.getElementById('glogin-screen').style.display = 'flex';
+          document.getElementById('main-nav').style.display = 'none';
+          document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
+          document.getElementById('g-account-badge').style.display = 'none';
+          return;
+        }
+      }
+
       gUnlockApp();
       // Get a fresh access token silently in background
       setTimeout(() => {
