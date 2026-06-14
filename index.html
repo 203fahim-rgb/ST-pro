@@ -7346,7 +7346,7 @@ function gBootCheck() {
       const u = JSON.parse(cached);
       // Check inactivity
       let last = parseInt(localStorage.getItem('g-last-active') || '0');
-      // Migration: if no timestamp saved yet, set it now (don't punish first-time users)
+      // If no timestamp saved yet, set it now (first time after update)
       if (last === 0) {
         last = Date.now();
         localStorage.setItem('g-last-active', last.toString());
@@ -7384,6 +7384,12 @@ function gBootCheck() {
 
 // Run boot check after DOM ready
 document.addEventListener('DOMContentLoaded', function() {
+  // Block back button — keeps user inside the app
+  history.pushState(null, '', location.href);
+  window.addEventListener('popstate', function() {
+    history.pushState(null, '', location.href);
+  });
+
   setTimeout(gBootCheck, 100);
 });
 
