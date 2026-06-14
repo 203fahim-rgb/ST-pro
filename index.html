@@ -6767,7 +6767,7 @@ function gsiInit() {
   google.accounts.id.initialize({
     client_id: GOOGLE_CLIENT_ID,
     callback: gHandleCredential,
-    auto_select: false,
+    auto_select: true,
   });
   google.accounts.id.renderButton(
     document.getElementById('gsi-btn-wrapper'),
@@ -7330,21 +7330,50 @@ function gBootCheck() {
   setTimeout(gsiInit, 500);
   setTimeout(gapiLoad, 500);
 
-  const cached = localStorage.getItem('g-user-cache');
   if (GOOGLE_CLIENT_ID === 'YOUR_CLIENT_ID_HERE') {
-    // Client ID not set yet — run app without Google login
     console.log('[ST PRO] Google Client ID not configured. Running offline mode.');
     return;
   }
 
-  // Show login screen
+  // Check inactivity lock every minute
+  setInterval(gCheckInactivityLock, 60 * 1000);
+
+  // Check if user was previously logged in
+  const cached = localStorage.getItem('g-user-cache');
+  if (cached) {
+    try {
+      const u = JSON.parse(cached);
+      // Check inactivity
+      const last = parseInt(localStorage.getItem('g-last-active') || '0');
+      const elapsed = Date.now() - last;
+      const limitMs = INACTIVITY_DAYS * 24 * 60 * 60 * 1000;
+      if (last > 0 && elapsed > limitMs) {
+        // Inactivity expired — show lock screen
+        document.getElementById('glogin-screen').style.display = 'none';
+        document.getElementById('main-nav').style.display = 'none';
+        document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
+        document.getElementById('lock-screen').style.display = 'flex';
+        return;
+      }
+      // Restore session from cache — skip login screen
+      gUser = { email: u.email, name: u.name, picture: u.picture, accessToken: null };
+      gIsAdmin = (gUser.email === ADMIN_EMAIL);
+      gUnlockApp();
+      // Get a fresh access token silently in background
+      setTimeout(() => {
+        if (_tokenClient) _tokenClient.requestAccessToken({ prompt: '' });
+      }, 1000);
+      return;
+    } catch(e) {
+      localStorage.removeItem('g-user-cache');
+    }
+  }
+
+  // No cached session — show login screen
   document.getElementById('glogin-screen').style.display = 'flex';
   document.getElementById('main-nav').style.display = 'none';
   document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
   document.getElementById('g-account-badge').style.display = 'none';
-
-  // Check inactivity lock every minute
-  setInterval(gCheckInactivityLock, 60 * 1000);
 }
 
 // Run boot check after DOM ready
